@@ -235,6 +235,7 @@ float random_no_zero(float n)
 }
 
 
+
 /* collision */
 
 std::optional<float> ccd_circle_line(float p0, float p1, float r, float b)
@@ -248,54 +249,78 @@ std::optional<float> ccd_circle_line(float p0, float p1, float r, float b)
     return pc*2 - p1;
 }
 
+float pow2f(float n) { return n*n; }
+
 std::pair<vec2, vec2> elastic_collision_2d(vec2 v1, vec2 v2, float m1, float m2, vec2 c1, vec2 c2)
 {
-    auto helper = [](vec2 v1, vec2 v2, float m1, float m2, vec2 c1, vec2 c2) {
-        return v1 - (c1 - c2) * (2.0f * m2 / (m1 + m2)) * vec_dot(v1 - v2, c1 - c2) / powf((c1 - c2).length(), 2.0f);
+    auto f = [](vec2 v1, vec2 v2, float m1, float m2, vec2 c1, vec2 c2) {
+        return v1 - (c1 - c2) * (2.0f * m2 / (m1 + m2)) * vec_dot(v1 - v2, c1 - c2) / pow2f((c1 - c2).length());
     };
-    vec2 v1p = helper(v1, v2, m1, m2, c1, c2);
-    vec2 v2p = helper(v2, v1, m2, m1, c2, c1);
+    vec2 v1p = f(v1, v2, m1, m2, c1, c2);
+    vec2 v2p = f(v2, v1, m2, m1, c2, c1);
     return std::make_pair(v1p, v2p);
 }
 
 
 
-/* sprite types */
+/* particle and engine classes */
 
 struct Graphics {
     SDL_Texture *tex;
     vec2 size;
 };
 
+struct {
+    std::vector<Graphics> loaded_gfx;
+
+    int add(Graphics &&gfx)
+    {
+        loaded_gfx.emplace_back(gfx);
+        return loaded_gfx.size() - 1;
+    }
+
+    Graphics & operator[](int id) { return loaded_gfx[id]; }
+    vec2 gfx_size(int id)         { return loaded_gfx[id].size; }
+} gfx_handler;
+
 struct Particle {
     Circle hitbox;
     vec2 vel = {0,0};
-    int gfx_id;
+    int gfx_id; // which Graphics to use
     float mass = 1.0f;
 
-    Particle() = default;
     Particle(vec2 p, float r, vec2 v, int id)
         : hitbox{p, r}, vel{v}, gfx_id{id}
     { }
 
-    void update()
-    {
-        vec2 p1 = hitbox.center;
-        vec2 p2 = hitbox.center + vel;
-        vec2 new_center = adjust_pos(p1, p2, hitbox.radius);
-        hitbox.center = new_center;
-    }
-
-    vec2 adjust_pos(vec2 p0, vec2 p1, float r)
-    {
-        vec2 res = p1;
-        if (auto wall = ccd_circle_line(p0.x, p1.x, r, 0);                  wall) { res.x = wall.value(); vel.x = -vel.x; }
-        if (auto wall = ccd_circle_line(p0.x, p1.x, r, real_screen_width);  wall) { res.x = wall.value(); vel.x = -vel.x; }
-        if (auto wall = ccd_circle_line(p0.y, p1.y, r, 0);                  wall) { res.y = wall.value(); vel.y = -vel.y; }
-        if (auto wall = ccd_circle_line(p0.y, p1.y, r, real_screen_height); wall) { res.y = wall.value(); vel.y = -vel.y; }
-        return res;
-    }
+    void update();
+    vec2 adjust_pos(vec2 p0, vec2 p1, float r);
 };
+
+std::pair<vec2, vec2> particle_collision(const Particle &p, const Particle &q)
+{
+    return elastic_collision_2d(p.vel, q.vel, p.mass, q.mass, p.hitbox.center, q.hitbox.center);
+}
+
+struct Engine {
+    SDL_Window *window;
+    SDL_Renderer *rd;
+    std::vector<Particle> particles;
+    int wnd_width = SCREEN_WIDTH, wnd_height = SCREEN_HEIGHT;
+
+    void init(int width, int height);
+    void deinit();
+    bool poll();
+    void draw_one(vec2 pos, int gfx_id);
+    void draw();
+    int load_gfx(std::string_view pathname);
+    void tick();
+    void add_sprite(Particle particle);
+    void draw_uniform_grid_lines(int grid_size);
+
+    int screen_width() const  { return wnd_width; }
+    int screen_height() const { return wnd_height; }
+} engine;
 
 
 
@@ -343,9 +368,91 @@ std::vector<Collision> sweep_and_prune(std::span<Particle> particles)
     return collisions;
 }
 
-std::vector<Collision> broad_phase_sap(std::span<Particle> particles)
+void test_sap()
 {
-    auto possible = sweep_and_prune(particles);
+    std::vector<Particle> ps = {
+        Particle{ vec2{10.0f, 40.0f},  5.0f, vec2{}, 0 },
+        Particle{ vec2{15.0f, 100.0f}, 5.0f, vec2{}, 0 },
+        Particle{ vec2{40.0f, 15.0f},  5.0f, vec2{}, 0 },
+        Particle{ vec2{60.0f, 40.0f},  5.0f, vec2{}, 0 },
+        Particle{ vec2{65.0f, 35.0f},  5.0f, vec2{}, 0 },
+        Particle{ vec2{76.0f, 90.0f},  5.0f, vec2{}, 0 },
+    };
+    auto collisions = sweep_and_prune(ps);
+    for (auto &c : collisions) {
+        auto &p = c.first;
+        auto &q = c.second;
+        fmt::print("collision between {} ({}, {}) and {} ({}, {})\n",
+            uintptr_t(p), p->hitbox.center.x, p->hitbox.center.y,
+            uintptr_t(q), q->hitbox.center.x, q->hitbox.center.y);
+    }
+}
+
+template <typename T, u32 N>
+struct Grid {
+    struct PairHash {
+        std::size_t operator()(const std::pair<u32, u32> &p) const
+        {
+            return p.first * N + p.second;
+        }
+    };
+
+    std::unordered_map<std::pair<u32, u32>,
+                       std::vector<T>,
+                       PairHash> data;
+
+    void put(u32 x, u32 y, T t)
+    {
+        assert(x < N && y < N);
+        auto &v = data[{x, y}];
+        v.push_back(t);
+    }
+
+    auto begin()       { return data.begin(); }
+    auto end()         { return data.end(); }
+};
+
+u32 get_pos(int n, int grid_size, int screen_size)
+{
+    int r = n * grid_size / screen_size;
+    return r < 0 ? 0 : r >= grid_size ? grid_size - 1 : r;
+}
+
+std::vector<std::pair<u32, u32>> grid_particle_positions(const Particle &p, u32 grid_size)
+{
+    u32 xmin = get_pos(p.hitbox.left().x  , grid_size , engine.screen_width());
+    u32 xmax = get_pos(p.hitbox.right().x , grid_size , engine.screen_width());
+    u32 ymin = get_pos(p.hitbox.up().y    , grid_size , engine.screen_height());
+    u32 ymax = get_pos(p.hitbox.down().y  , grid_size , engine.screen_height());
+    std::vector<std::pair<u32, u32>> res = { std::make_pair(xmin, ymin) };
+    if (xmax != xmin)                 { res.push_back(std::make_pair(xmax, ymin)); }
+    if (ymax != ymin)                 { res.push_back(std::make_pair(xmin, ymax)); }
+    if (xmax != xmin && ymax != ymin) { res.push_back(std::make_pair(xmax, ymax)); }
+    return res;
+}
+
+std::vector<Collision> uniform_grid(std::span<Particle> particles)
+{
+    Grid<Particle *, 8> grid;
+    for (auto &p : particles)
+        for (auto &pos : grid_particle_positions(p, 3))
+            grid.put(pos.first, pos.second, &p);
+
+    std::vector<Collision> collisions;
+    for (auto [pos, cell] : grid) {
+        for (auto i = 0u; i < cell.size()-1; i++) {
+            for (auto j = i+1; j < cell.size(); j++) {
+                collisions.push_back(std::make_pair(cell[i], cell[j]));
+            }
+        }
+    }
+
+    return collisions;
+}
+
+std::vector<Collision> broad_phase(std::span<Particle> particles)
+{
+    auto possible = uniform_grid(particles);
     filter(possible, [&](const auto &c) {
         auto &p = *c.first;
         auto &q = *c.second;
@@ -356,41 +463,38 @@ std::vector<Collision> broad_phase_sap(std::span<Particle> particles)
 
 
 
-/* engine stuff */
 
-struct {
-    std::vector<Graphics> loaded_gfx;
+/*
+ * particle and engine implementations
+ * (put here because one particle function depends on engine class
+ *  and engine class depends on particle class)
+ */
 
-    int add(Graphics &&gfx)
-    {
-        loaded_gfx.emplace_back(gfx);
-        return loaded_gfx.size() - 1;
-    }
+void Particle::update()
+{
+    vec2 p1 = hitbox.center;
+    vec2 p2 = hitbox.center + vel;
+    vec2 new_center = adjust_pos(p1, p2, hitbox.radius);
+    hitbox.center = new_center;
+}
 
-    Graphics & operator[](int id) { return loaded_gfx[id]; }
-    vec2 gfx_size(int id)         { return loaded_gfx[id].size; }
-} gfx_handler;
-
-struct Engine {
-    SDL_Window *window;
-    SDL_Renderer *rd;
-    std::vector<Particle> particles;
-
-    void init(int width, int height);
-    void deinit();
-    bool poll();
-    void draw_one(vec2 pos, int gfx_id);
-    void draw();
-    int load_gfx(std::string_view pathname);
-    void tick();
-    void add_sprite(Particle particle);
-} engine;
+vec2 Particle::adjust_pos(vec2 p0, vec2 p1, float r)
+{
+    vec2 res = p1;
+    if (auto wall = ccd_circle_line(p0.x, p1.x, r, 0);                      wall) { res.x = wall.value(); vel.x = -vel.x; }
+    if (auto wall = ccd_circle_line(p0.x, p1.x, r, engine.screen_width());  wall) { res.x = wall.value(); vel.x = -vel.x; }
+    if (auto wall = ccd_circle_line(p0.y, p1.y, r, 0);                      wall) { res.y = wall.value(); vel.y = -vel.y; }
+    if (auto wall = ccd_circle_line(p0.y, p1.y, r, engine.screen_height()); wall) { res.y = wall.value(); vel.y = -vel.y; }
+    return res;
+}
 
 void Engine::init(int width, int height)
 {
     SDL_Init(SDL_INIT_VIDEO);
     window = SDL_CreateWindow("Particle sim", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_SHOWN);
     rd = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    wnd_width = width;
+    wnd_height = height;
 }
 
 void Engine::deinit()
@@ -427,13 +531,29 @@ void Engine::draw()
     for (auto &p : particles)
         draw_one(p.hitbox.top_left(), p.gfx_id);
     SDL_SetRenderDrawColor(rd, 0xff, 0, 0, 0xff);
+    draw_uniform_grid_lines(8);
     SDL_RenderPresent(rd);
+}
+
+void Engine::draw_uniform_grid_lines(int grid_size)
+{
+    for (int i = 1; i < grid_size; i++) {
+        vec2 start = { screen_width() / grid_size * i, 0 };
+        vec2 end   = { screen_width() / grid_size * i, screen_height() };
+        SDL_RenderDrawLine(rd, int(start.x), int(start.y), int(end.x), int(end.y));
+    }
+
+    for (int i = 1; i < grid_size; i++) {
+        vec2 start = { 0,              screen_height() / grid_size * i };
+        vec2 end   = { screen_width(), screen_height() / grid_size * i };
+        SDL_RenderDrawLine(rd, int(start.x), int(start.y), int(end.x), int(end.y));
+    }
 }
 
 int Engine::load_gfx(std::string_view pathname)
 {
     auto *bmp = SDL_LoadBMP(pathname.data());
-    assert(bmp && "load failed");
+    assert(bmp && "load of bmp image failed");
     auto *tex = SDL_CreateTextureFromSurface(rd, bmp);
     SDL_FreeSurface(bmp);
     return gfx_handler.add({ .tex = tex, .size = {bmp->w, bmp->h} });
@@ -443,13 +563,11 @@ void Engine::tick()
 {
     for (auto &particle : particles)
         particle.update();
-    auto collisions = broad_phase_sap(particles);
-    for (auto &c : collisions) {
-        auto &p = *c.first;
-        auto &q = *c.second;
-        auto [v1, v2] = elastic_collision_2d(p.vel, q.vel, p.mass, q.mass, p.hitbox.center, q.hitbox.center);
-        p.vel = v1;
-        q.vel = v2;
+    auto collisions = broad_phase(particles);
+    for (auto [p, q] : collisions) {
+        auto [v1, v2] = particle_collision(*p, *q);
+        p->vel = v1;
+        q->vel = v2;
     }
 }
 
@@ -500,10 +618,16 @@ void init(int width, int height, int num_particles)
     gfx[2]  = engine.load_gfx("cyan.bmp");
     gfx[3]  = engine.load_gfx("red.bmp");
     gfx[4]  = engine.load_gfx("green.bmp");
+
+    // float radius = float(gfx_handler.gfx_size(0).x / 2);
+    // engine.add_sprite(Particle{ vec2{width / 8, 20}, radius, vec2{0, 5}, 0});
+    // engine.add_sprite(Particle{ vec2{width / 8, 400}, radius, vec2{0, -5}, 0});
+
     for (int i = 0; i < num_particles; i++) {
         int id = gfx[random_between(0, 5)];
         engine.add_sprite(generate_particle(width, height, id));
     }
+
     game_clock.init();
 }
 
@@ -523,27 +647,7 @@ void game_loop()
     }
 }
 
-void test()
-{
-    std::vector<Particle> ps = {
-        Particle{ vec2{10.0f, 40.0f},  5.0f, vec2{}, 0 },
-        Particle{ vec2{15.0f, 100.0f}, 5.0f, vec2{}, 0 },
-        Particle{ vec2{40.0f, 15.0f},  5.0f, vec2{}, 0 },
-        Particle{ vec2{60.0f, 40.0f},  5.0f, vec2{}, 0 },
-        Particle{ vec2{65.0f, 35.0f},  5.0f, vec2{}, 0 },
-        Particle{ vec2{76.0f, 90.0f},  5.0f, vec2{}, 0 },
-    };
-    auto collisions = sweep_and_prune(ps);
-    for (auto &c : collisions) {
-        auto &p = c.first;
-        auto &q = c.second;
-        fmt::print("collision between {} ({}, {}) and {} ({}, {})\n",
-            uintptr_t(p), p->hitbox.center.x, p->hitbox.center.y,
-            uintptr_t(q), q->hitbox.center.x, q->hitbox.center.y);
-    }
-}
-
-template <typename T = std::string_view>
+template <typename T>
 std::optional<int> to_int(const T &str, unsigned base = 10)
 {
     int value = 0;
@@ -566,14 +670,14 @@ int main(int argc, char *argv[])
         cmdline::print_args(args);
         return 0;
     }
-    int num = NUM_PARTICLES;
+    int width = SCREEN_WIDTH, height = SCREEN_HEIGHT, num = NUM_PARTICLES;
     if (result.has['w']) {
         auto o = to_int(result.params['w']);
         if (!o) {
             fmt::print(stderr, "invalid number: {}\n", result.params['w']);
             return 1;
         }
-        real_screen_width = o.value();
+        width = o.value();
     }
     if (result.has['i']) {
         auto o = to_int(result.params['i']);
@@ -581,7 +685,7 @@ int main(int argc, char *argv[])
             fmt::print(stderr, "invalid number: {}\n", result.params['i']);
             return 1;
         }
-        real_screen_height = o.value();
+        height = o.value();
     }
     if (result.has['n']) {
         auto o = to_int(result.params['n']);
@@ -592,8 +696,7 @@ int main(int argc, char *argv[])
         num = o.value();
     }
 
-    // test();
-    init(real_screen_width, real_screen_height, num);
+    init(width, height, num);
     game_loop();
     deinit();
     return 0;
