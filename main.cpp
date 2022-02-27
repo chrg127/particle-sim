@@ -176,6 +176,7 @@ struct Circle {
     Circle(float x, float y, float r) : center{x, y}, radius{r} { }
 
     vec2 top_left() const { return center - radius; }
+    vec2 bottom_right() const { return center + radius; }
     vec2 left() const     { return vec2{center.x - radius, center.y}; }
     vec2 right() const    { return vec2{center.x + radius, center.y}; }
     vec2 up() const       { return vec2{center.x, center.y - radius}; }
@@ -295,6 +296,7 @@ struct Particle {
 
     void update();
     vec2 adjust_pos(vec2 p0, vec2 p1, float r);
+    const vec2 & pos() const { return hitbox.center; }
 };
 
 std::pair<vec2, vec2> particle_collision(const Particle &p, const Particle &q)
@@ -401,58 +403,47 @@ struct Grid {
                        std::vector<T>,
                        PairHash> data;
 
-    void put(u32 x, u32 y, T t)
+    void put_in_cell(u32 x, u32 y, T t)
     {
+        // fmt::print("adding at {},{}\n", x, y);
         assert(x < N && y < N);
         auto &v = data[{x, y}];
         v.push_back(t);
+    }
+
+    void put(vec2 tl, vec2 br, T t)
+    {
+        int start_row = std::max(0, (int) tl.x / (engine.screen_width() / 3));
+        int start_col = std::max(0, (int) tl.y / (engine.screen_width() / 3));
+        int end_row   = std::min(2, (int) br.x / (engine.screen_height() / 3));
+        int end_col   = std::min(2, (int) br.y / (engine.screen_height() / 3));
+        for (int row = start_row; row <= end_row; row++)
+            for (int col = start_col; col <= end_col; col++)
+                put_in_cell(row, col, t);
     }
 
     auto begin()       { return data.begin(); }
     auto end()         { return data.end(); }
 };
 
-u32 get_pos(int n, int grid_size, int screen_size)
-{
-    int r = n * grid_size / screen_size;
-    return r < 0 ? 0 : r >= grid_size ? grid_size - 1 : r;
-}
-
-std::vector<std::pair<u32, u32>> grid_particle_positions(const Particle &p, u32 grid_size)
-{
-    u32 xmin = get_pos(p.hitbox.left().x  , grid_size , engine.screen_width());
-    u32 xmax = get_pos(p.hitbox.right().x , grid_size , engine.screen_width());
-    u32 ymin = get_pos(p.hitbox.up().y    , grid_size , engine.screen_height());
-    u32 ymax = get_pos(p.hitbox.down().y  , grid_size , engine.screen_height());
-    std::vector<std::pair<u32, u32>> res = { std::make_pair(xmin, ymin) };
-    if (xmax != xmin)                 { res.push_back(std::make_pair(xmax, ymin)); }
-    if (ymax != ymin)                 { res.push_back(std::make_pair(xmin, ymax)); }
-    if (xmax != xmin && ymax != ymin) { res.push_back(std::make_pair(xmax, ymax)); }
-    return res;
-}
-
 std::vector<Collision> uniform_grid(std::span<Particle> particles)
 {
     Grid<Particle *, 8> grid;
     for (auto &p : particles)
-        for (auto &pos : grid_particle_positions(p, 3))
-            grid.put(pos.first, pos.second, &p);
+        grid.put(p.hitbox.top_left(), p.hitbox.bottom_right(), &p);
 
     std::vector<Collision> collisions;
-    for (auto [pos, cell] : grid) {
-        for (auto i = 0u; i < cell.size()-1; i++) {
-            for (auto j = i+1; j < cell.size(); j++) {
+    for (auto [pos, cell] : grid)
+        for (auto i = 0u; i < cell.size()-1; i++)
+            for (auto j = i+1; j < cell.size(); j++)
                 collisions.push_back(std::make_pair(cell[i], cell[j]));
-            }
-        }
-    }
 
     return collisions;
 }
 
 std::vector<Collision> broad_phase(std::span<Particle> particles)
 {
-    auto possible = uniform_grid(particles);
+    auto possible = sweep_and_prune(particles);
     filter(possible, [&](const auto &c) {
         auto &p = *c.first;
         auto &q = *c.second;
