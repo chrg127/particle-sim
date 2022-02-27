@@ -452,6 +452,50 @@ std::vector<Collision> broad_phase(std::span<Particle> particles)
     return possible;
 }
 
+/*
+ * note that the k-d tree algorithm, as implemented like this, won't take count
+ * of the fact that some particles might be positioned right where the split
+ * occurs, making these particles part of both splitted areas.
+ * (this means it doesn't do shit and thus should only be taken as a
+ * demonstration on how to start implementing it. i've spent enough time with it
+ * already, i don't feel like finishing it).
+ */
+void kdtree(std::span<Particle *> particles, int depth, auto &&fn)
+{
+    if (particles.size() <= 1)
+        return;
+    if (depth > 10) {
+        fn(particles);
+        return;
+    }
+    auto axis = depth % 2;
+    auto median = particles.size() / 2;
+    std::sort(particles.begin(), particles.end(), [&](const auto *p, const auto *q) {
+        return p->pos()[axis] < q->pos()[axis];
+    });
+    kdtree(particles.subspan(0, median), depth + 1, fn);
+    kdtree(particles.subspan(median),    depth + 1, fn);
+}
+
+std::vector<Collision> broad_phase_kdtree(std::span<Particle> particles)
+{
+    std::vector<Particle *> pointers;
+    std::vector<Collision> collisions;
+    for (auto &p : particles)
+        pointers.push_back(&p);
+    kdtree(pointers, 0, [&](std::span<Particle *> ps) {
+        for (auto i = 0u; i < ps.size(); i++) {
+            for (auto j = i+1; j < ps.size(); j++) {
+                auto &p = ps[i];
+                auto &q = ps[j];
+                if (circle_circle_intersecting(p->hitbox, q->hitbox)) {
+                    collisions.push_back(std::make_pair(p, q));
+                }
+            }
+        }
+    });
+    return collisions;
+}
 
 
 
