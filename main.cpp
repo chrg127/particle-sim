@@ -502,7 +502,7 @@ std::vector<Collision> broad_phase_kdtree(std::span<Particle> particles)
 void Particle::update(float dt)
 {
     vec2 p1 = hitbox.center;
-    vec2 p2 = hitbox.center + vel;
+    vec2 p2 = hitbox.center + vel * dt;
     vec2 new_center = adjust_pos(p1, p2, hitbox.radius);
     hitbox.center = new_center;
 }
@@ -588,6 +588,8 @@ int Engine::load_gfx(std::string_view pathname)
     return gfx_handler.add({ .tex = tex, .size = {bmp->w, bmp->h} });
 }
 
+// note that dt may or may not be used depending on which game loop we use
+// (look at the bottom for the 3 possible game loops)
 void Engine::tick(float dt)
 {
     for (auto &particle : particles)
@@ -604,23 +606,6 @@ void Engine::add_sprite(Particle particle)
 {
     particles.push_back(particle);
 }
-
-
-
-/* clock */
-
-struct Clock {
-    u32 next = 0;
-
-    void init() { next = SDL_GetTicks() + TICK_INTERVAL; }
-    void update() { next += TICK_INTERVAL; }
-
-    u32 time_left()
-    {
-        u32 now = SDL_GetTicks();
-        return next <= now ? 0 : next - now;
-    }
-} game_clock;
 
 
 
@@ -657,7 +642,6 @@ void init(int width, int height, int num_particles)
         engine.add_sprite(generate_particle(width, height, id));
     }
 
-    game_clock.init();
 }
 
 void deinit()
@@ -665,22 +649,64 @@ void deinit()
     engine.deinit();
 }
 
+// found somewhere on stack overflow
+// it's a fixed time step loop that will play bad if a frame
+// consistently takes more than TICK_INTERVAL.
+void game_loop1()
+{
+    u32 next = SDL_GetTicks() + TICK_INTERVAL;
+    for (bool running = true; running; ) {
+        next += TICK_INTERVAL;
+        running = engine.poll();
+        engine.tick(1);
+        engine.draw();
+        u32 now = SDL_GetTicks();
+        SDL_Delay(next <= now ? 0 : next - now);
+    }
+}
+
+// http://gameprogrammingpatterns.com/game-loop.html
+
+// (this one still needs a sleep() somewhere)
+void game_loop2()
+{
+    auto last_time = SDL_GetTicks();
+    for (bool running = true; running; ) {
+        auto current = SDL_GetTicks();
+        auto elapsed = current - last_time;
+        running = engine.poll();
+        engine.tick(elapsed);
+        engine.draw();
+        last_time = current;
+    }
+}
+
+void game_loop3()
+{
+    auto prev = SDL_GetTicks();
+    u32 lag = 0;
+    for (bool running = true; running; ) {
+        auto curr = SDL_GetTicks();
+        auto elapsed = curr - prev;
+        prev = curr;
+        lag += elapsed;
+        // fmt::print("lag = {}\n", lag);
+        running = engine.poll();
+        while (lag >= TICK_INTERVAL) {
+            engine.tick(1);
+            lag -= TICK_INTERVAL;
+        }
+        // slightly modified from game programming patterns's example.
+        // instead of using lag in the render function, we use it for
+        // sleeping. (we need to sleep anyway to reduce power consumption)
+        engine.draw();
+        SDL_Delay(lag);
+    }
+}
+
 void game_loop()
 {
-    u64 now = SDL_GetPerformanceCounter();
-    u64 last = 0;
-    float dt = 0;
-
-    for (bool running = true; running; ) {
-        last = now;
-        now = SDL_GetPerformanceCounter();
-        dt = float((now - last) * 1000 / float(SDL_GetPerformanceFrequency()));
-        running = engine.poll();
-        engine.tick(dt);
-        engine.draw();
-        SDL_Delay(game_clock.time_left());
-        game_clock.update();
-    }
+    game_loop1();
 }
 
 template <typename T>
