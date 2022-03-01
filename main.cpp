@@ -21,8 +21,8 @@
 
 const int NUM_PARTICLES = 10;
 const int TICK_INTERVAL = 30;
-const int SCREEN_WIDTH = 1200;
-const int SCREEN_HEIGHT = 1000;
+const int SCREEN_WIDTH = 800;
+const int SCREEN_HEIGHT = 600;
 
 int real_screen_width = SCREEN_WIDTH;
 int real_screen_height = SCREEN_HEIGHT;
@@ -31,11 +31,12 @@ int real_screen_height = SCREEN_HEIGHT;
 
 /* typedefs and vector class */
 
-using u8 = uint8_t;
+using u8  = uint8_t;
 using u16 = uint16_t;
 using u32 = uint32_t;
-using i8 = int8_t;
-using i16 = uint16_t;
+using u64 = uint64_t;
+using i8  = int8_t;
+using i16 = int16_t;
 using i32 = int32_t;
 using i64 = int64_t;
 
@@ -294,7 +295,7 @@ struct Particle {
         : hitbox{p, r}, vel{v}, gfx_id{id}
     { }
 
-    void update();
+    void update(float dt);
     vec2 adjust_pos(vec2 p0, vec2 p1, float r);
     const vec2 & pos() const { return hitbox.center; }
 };
@@ -316,7 +317,7 @@ struct Engine {
     void draw_one(vec2 pos, int gfx_id);
     void draw();
     int load_gfx(std::string_view pathname);
-    void tick();
+    void tick(float dt);
     void add_sprite(Particle particle);
     void draw_uniform_grid_lines(int grid_size);
 
@@ -340,13 +341,6 @@ std::vector<Collision> broad_phase_brute(std::span<Particle> particles)
     return collisions;
 }
 
-template <typename T>
-void filter(T &v, auto &&fn)
-{
-    auto it = std::remove_if(v.begin(), v.end(), fn);
-    v.erase(it, v.end());
-}
-
 std::vector<Collision> sweep_and_prune(std::span<Particle> particles)
 {
     std::vector<Particle *> axis_list{particles.size()};
@@ -359,7 +353,7 @@ std::vector<Collision> sweep_and_prune(std::span<Particle> particles)
     std::vector<Particle *> active;
     std::vector<Collision> collisions;
     for (auto *p : axis_list) {
-        filter(active, [&](const auto *q) {
+        std::erase_if(active, [&](const auto *q) {
             return p->hitbox.left().x > q->hitbox.right().x;
         });
         for (auto *q : active)
@@ -444,7 +438,7 @@ std::vector<Collision> uniform_grid(std::span<Particle> particles)
 std::vector<Collision> broad_phase(std::span<Particle> particles)
 {
     auto possible = sweep_and_prune(particles);
-    filter(possible, [&](const auto &c) {
+    std::erase_if(possible, [&](const auto &c) {
         auto &p = *c.first;
         auto &q = *c.second;
         return !circle_circle_intersecting(p.hitbox, q.hitbox);
@@ -505,7 +499,7 @@ std::vector<Collision> broad_phase_kdtree(std::span<Particle> particles)
  *  and engine class depends on particle class)
  */
 
-void Particle::update()
+void Particle::update(float dt)
 {
     vec2 p1 = hitbox.center;
     vec2 p2 = hitbox.center + vel;
@@ -566,7 +560,7 @@ void Engine::draw()
     for (auto &p : particles)
         draw_one(p.hitbox.top_left(), p.gfx_id);
     SDL_SetRenderDrawColor(rd, 0xff, 0, 0, 0xff);
-    draw_uniform_grid_lines(8);
+    // draw_uniform_grid_lines(8);
     SDL_RenderPresent(rd);
 }
 
@@ -594,10 +588,10 @@ int Engine::load_gfx(std::string_view pathname)
     return gfx_handler.add({ .tex = tex, .size = {bmp->w, bmp->h} });
 }
 
-void Engine::tick()
+void Engine::tick(float dt)
 {
     for (auto &particle : particles)
-        particle.update();
+        particle.update(dt);
     auto collisions = broad_phase(particles);
     for (auto [p, q] : collisions) {
         auto [v1, v2] = particle_collision(*p, *q);
@@ -673,9 +667,16 @@ void deinit()
 
 void game_loop()
 {
+    u64 now = SDL_GetPerformanceCounter();
+    u64 last = 0;
+    float dt = 0;
+
     for (bool running = true; running; ) {
+        last = now;
+        now = SDL_GetPerformanceCounter();
+        dt = float((now - last) * 1000 / float(SDL_GetPerformanceFrequency()));
         running = engine.poll();
-        engine.tick();
+        engine.tick(dt);
         engine.draw();
         SDL_Delay(game_clock.time_left());
         game_clock.update();
