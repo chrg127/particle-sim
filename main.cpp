@@ -721,11 +721,11 @@ std::optional<int> to_int(const T &str, unsigned base = 10)
 
 int main(int argc, char *argv[])
 {
-    static const cmdline::ArgumentList args = {
+    static const cmdline::Argument args[] = {
         { 'h', "help", "print this help text" },
         { 'n', "num-particles", "set number of particles", cmdline::ParamType::Single },
-        { 'w', "width", "set screen width", cmdline::ParamType::Single },
-        { 'i', "height", "set screen height", cmdline::ParamType::Single },
+        { 'w', "width", "set screen width", cmdline::ParamType::Single, "800" },
+        { 'i', "height", "set screen height", cmdline::ParamType::Single, "600" },
     };
     auto result = cmdline::parse(argc, argv, args);
     if (result.has['h']) {
@@ -733,30 +733,19 @@ int main(int argc, char *argv[])
         return 0;
     }
     int width = SCREEN_WIDTH, height = SCREEN_HEIGHT, num = NUM_PARTICLES;
-    if (result.has['w']) {
-        auto o = to_int(result.params['w']);
-        if (!o) {
-            fmt::print(stderr, "invalid number: {}\n", result.params['w']);
-            return 1;
+    auto check_flag = [&](char flag, int &var) {
+        if (result.has[flag]) {
+            auto o = to_int(result.params[flag]);
+            if (!o) {
+                fmt::print(stderr, "invalid number {}\n", result.params[flag]);
+                exit(1);
+            }
+            var = o.value();
         }
-        width = o.value();
-    }
-    if (result.has['i']) {
-        auto o = to_int(result.params['i']);
-        if (!o) {
-            fmt::print(stderr, "invalid number: {}\n", result.params['i']);
-            return 1;
-        }
-        height = o.value();
-    }
-    if (result.has['n']) {
-        auto o = to_int(result.params['n']);
-        if (!o) {
-            fmt::print(stderr, "invalid number: {}\n", result.params['n']);
-            return 1;
-        }
-        num = o.value();
-    }
+    };
+    check_flag('w', width);
+    check_flag('i', height);
+    check_flag('n', num);
 
     init(width, height, num);
     game_loop();

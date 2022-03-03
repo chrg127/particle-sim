@@ -4,6 +4,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+#include <span>
 
 namespace cmdline {
 
@@ -17,75 +18,58 @@ struct Argument {
     std::string_view default_param = "";
 };
 
-using ArgumentList = std::vector<Argument>;
-
 struct Result {
     std::unordered_map<char, bool> has;
     std::unordered_map<char, std::string_view> params;
     std::vector<std::string_view> items;
 };
 
-constexpr inline void warning(std::string_view fmtstr, auto&&... args)
-{
-    fmt::print(stderr, "warning: ");
-    fmt::print(stderr, fmt::runtime(fmtstr), args...);
-}
+inline auto find_arg(std::string_view arg, std::span<const Argument> l) { return std::find_if(l.begin(), l.end(), [&](const auto &a) { return a.long_opt  == arg; }); }
+inline auto find_arg(            char arg, std::span<const Argument> l) { return std::find_if(l.begin(), l.end(), [&](const auto &a) { return a.short_opt == arg; }); }
 
-auto find_arg(std::string_view arg, const ArgumentList &list) { return std::find_if(list.begin(), list.end(), [&](const auto &a) { return a.long_opt  == arg; }); }
-auto find_arg(char arg,             const ArgumentList &list) { return std::find_if(list.begin(), list.end(), [&](const auto &a) { return a.short_opt == arg; }); }
-
-inline Result parse(const std::vector<std::string_view> &args, const ArgumentList &valid_args)
+inline Result parse(int argc, char *argv[], std::span<const Argument> valid)
 {
     Result res;
-    for (auto it = args.begin()+1, it2 = args.begin()+2; it != args.end(); ++it, ++it2) {
-        std::string_view curr = *it;
-
-        if (curr[0] != '-') {
+    while (++argv, --argc > 0) {
+        std::string_view curr = *argv;
+        if (curr[0] != '-' || (curr[0] == '-' && curr.size() == 1)) {
             res.items.push_back(curr);
             continue;
         }
-
-        auto arg = curr[1] == '-'   ? find_arg(curr.substr(2), valid_args)
-                 : curr.size() == 2 ? find_arg(curr[1], valid_args)
-                 :                    valid_args.end();
-        if (arg == valid_args.end()) {
-            warning("invalid argument: {}\n", curr);
+        auto arg = curr[1] == '-'   ? find_arg(curr.substr(2), valid)
+                 : curr.size() == 2 ? find_arg(curr[1], valid)
+                 :                    valid.end();
+        if (arg == valid.end()) {
+            fprintf(stderr, "invalid argument: %s\n", curr.data());
             continue;
         }
-        if (res.has[arg->short_opt]) {
-            warning("argument {} was specified multiple times\n", curr);
+        auto &has_short = res.has[arg->short_opt];
+        if (has_short) {
+            fprintf(stderr, "argument %s was specified multiple times\n", curr.data());
             continue;
         }
-        res.has[arg->short_opt] = true;
-
+        has_short = true;
         if (arg->param_type != ParamType::None) {
-            ++it;
-            if (it == args.end()) {
-                warning("argument --{} needs a parameter (default \"{}\" will be used)\n", arg->long_opt, arg->default_param);
+            ++argv; --argc;
+            if (argc == 0) {
+                fprintf(stderr, "argument %s needs a parameter (default \"%s\" will be used)\n", curr.data(), arg->default_param.data());
                 res.params[arg->short_opt] = arg->default_param;
             } else {
-                res.params[arg->short_opt] = *it;
+                res.params[arg->short_opt] = *argv;
             }
         }
     }
     return res;
 }
 
-inline void print_args(const std::vector<Argument> &args, FILE *f = stdout)
+inline void print_args(std::span<const Argument> args, FILE *f = stdout)
 {
     const auto maxwidth = std::max_element(args.begin(), args.end(), [](const auto &p, const auto &q) {
         return p.long_opt.size() < q.long_opt.size();
     })->long_opt.size();
-
-    fmt::print(f, "Valid arguments:\n");
-    for (const auto &arg : args) {
-        fmt::print(f, "    -{}, --{:{}}    {}\n", arg.short_opt, arg.long_opt, maxwidth, arg.desc);
-    }
-}
-
-inline Result parse(int argc, char **argv, const ArgumentList &valid_args)
-{
-    return parse(std::vector<std::string_view>{argv, argv + argc}, valid_args);
+    fprintf(f, "Valid arguments:\n");
+    for (const auto &arg : args)
+        fprintf(f, "    -%c, --%-*s    %s\n", arg.short_opt, int(maxwidth), arg.long_opt.data(), arg.desc.data());
 }
 
 } // namespace cmdline
