@@ -23,6 +23,7 @@ const int NUM_PARTICLES = 10;
 const int TICK_INTERVAL = 30;
 const int SCREEN_WIDTH = 800;
 const int SCREEN_HEIGHT = 600;
+const int PARTICLE_SIZE = 32;
 
 int real_screen_width = SCREEN_WIDTH;
 int real_screen_height = SCREEN_HEIGHT;
@@ -288,11 +289,13 @@ struct {
 struct Particle {
     Circle hitbox;
     vec2 vel = {0,0};
+    vec2 accel = {0,0};
     int gfx_id; // which Graphics to use
     float mass = 1.0f;
+    int frame = 0;
 
-    Particle(vec2 p, float r, vec2 v, int id)
-        : hitbox{p, r}, vel{v}, gfx_id{id}
+    Particle(vec2 p, float r, vec2 v, int id, int f)
+        : hitbox{p, r}, vel{v}, gfx_id{id}, frame{f}
     { }
 
     void update(float dt);
@@ -314,7 +317,7 @@ struct Engine {
     void init(int width, int height);
     void deinit();
     bool poll();
-    void draw_one(vec2 pos, int gfx_id);
+    void draw_one(vec2 pos, int gfx_id, int frame);
     void draw();
     int load_gfx(std::string_view pathname);
     void tick(float dt);
@@ -367,12 +370,12 @@ std::vector<Collision> sweep_and_prune(std::span<Particle> particles)
 void test_sap()
 {
     std::vector<Particle> ps = {
-        Particle{ vec2{10.0f, 40.0f},  5.0f, vec2{}, 0 },
-        Particle{ vec2{15.0f, 100.0f}, 5.0f, vec2{}, 0 },
-        Particle{ vec2{40.0f, 15.0f},  5.0f, vec2{}, 0 },
-        Particle{ vec2{60.0f, 40.0f},  5.0f, vec2{}, 0 },
-        Particle{ vec2{65.0f, 35.0f},  5.0f, vec2{}, 0 },
-        Particle{ vec2{76.0f, 90.0f},  5.0f, vec2{}, 0 },
+        Particle{ vec2{10.0f, 40.0f},  5.0f, vec2{}, 0, 0 },
+        Particle{ vec2{15.0f, 100.0f}, 5.0f, vec2{}, 0, 0 },
+        Particle{ vec2{40.0f, 15.0f},  5.0f, vec2{}, 0, 0 },
+        Particle{ vec2{60.0f, 40.0f},  5.0f, vec2{}, 0, 0 },
+        Particle{ vec2{65.0f, 35.0f},  5.0f, vec2{}, 0, 0 },
+        Particle{ vec2{76.0f, 90.0f},  5.0f, vec2{}, 0, 0 },
     };
     auto collisions = sweep_and_prune(ps);
     for (auto &c : collisions) {
@@ -501,6 +504,7 @@ std::vector<Collision> broad_phase_kdtree(std::span<Particle> particles)
 
 void Particle::update(float dt)
 {
+    vel += accel * dt;
     vec2 p1 = hitbox.center;
     vec2 p2 = hitbox.center + vel * dt;
     vec2 new_center = adjust_pos(p1, p2, hitbox.radius);
@@ -544,12 +548,11 @@ bool Engine::poll()
     return true;
 }
 
-void Engine::draw_one(vec2 pos, int gfx_id)
+void Engine::draw_one(vec2 pos, int gfx_id, int frame)
 {
     auto &gfx = gfx_handler[gfx_id];
-    vec2 size = gfx.size;
-    SDL_Rect src = { 0, 0, int(size.x), int(size.y) };
-    SDL_Rect dst = { int(pos.x), int(pos.y), int(size.x), int(size.y) };
+    SDL_Rect src = { frame * PARTICLE_SIZE, 0, PARTICLE_SIZE, PARTICLE_SIZE };
+    SDL_Rect dst = { int(pos.x), int(pos.y), PARTICLE_SIZE, PARTICLE_SIZE };
     SDL_RenderCopy(rd, gfx.tex, &src, &dst);
 }
 
@@ -558,7 +561,7 @@ void Engine::draw()
     SDL_SetRenderDrawColor(rd, 0, 0, 0, 0xff);
     SDL_RenderClear(rd);
     for (auto &p : particles)
-        draw_one(p.hitbox.top_left(), p.gfx_id);
+        draw_one(p.hitbox.top_left(), p.gfx_id, p.frame);
     SDL_SetRenderDrawColor(rd, 0xff, 0, 0, 0xff);
     // draw_uniform_grid_lines(8);
     SDL_RenderPresent(rd);
@@ -613,35 +616,23 @@ void Engine::add_sprite(Particle particle)
 
 auto generate_particle(int screen_width, int screen_height, int id)
 {
-    float radius = float(gfx_handler.gfx_size(id).x / 2);
+    float radius = PARTICLE_SIZE/2;
     vec2 pos{
         random_between(0 + radius, screen_width  - radius),
         random_between(0 + radius, screen_height - radius),
     };
     vec2 vel{ random_no_zero(6), random_no_zero(6) };
-    return Particle{pos, radius, vel, id};
+    return Particle{pos, radius, vel, id, int(random_between(0, 5))};
 }
 
 void init(int width, int height, int num_particles)
 {
     std::srand(time(nullptr));
     engine.init(width, height);
-    std::array<int, 5> gfx;
-    gfx[0]  = engine.load_gfx("orange.bmp");
-    gfx[1]  = engine.load_gfx("blue.bmp");
-    gfx[2]  = engine.load_gfx("cyan.bmp");
-    gfx[3]  = engine.load_gfx("red.bmp");
-    gfx[4]  = engine.load_gfx("green.bmp");
+    int gfx = engine.load_gfx("ball.bmp");
 
-    // float radius = float(gfx_handler.gfx_size(0).x / 2);
-    // engine.add_sprite(Particle{ vec2{width / 8, 20}, radius, vec2{0, 5}, 0});
-    // engine.add_sprite(Particle{ vec2{width / 8, 400}, radius, vec2{0, -5}, 0});
-
-    for (int i = 0; i < num_particles; i++) {
-        int id = gfx[random_between(0, 5)];
-        engine.add_sprite(generate_particle(width, height, id));
-    }
-
+    for (int i = 0; i < num_particles; i++)
+        engine.add_sprite(generate_particle(width, height, gfx));
 }
 
 void deinit()
