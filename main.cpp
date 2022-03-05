@@ -20,13 +20,21 @@
 /* constants */
 
 const int NUM_PARTICLES = 10;
-const int TICK_INTERVAL = 30;
 const int SCREEN_WIDTH = 800;
 const int SCREEN_HEIGHT = 600;
 const int PARTICLE_SIZE = 32;
+const float PARTICLE_MIN_VEL = 0.001f;
+const float PARTICLE_MAX_VEL = 0.5f;
 
-int real_screen_width = SCREEN_WIDTH;
-int real_screen_height = SCREEN_HEIGHT;
+// use for game loop 4 (the one actually in use)
+// all these constants are in milliseconds (ms)
+// this is due to SDL using ms too
+const i32 MIN_FRAME_TIME  = 3;
+const float ELAPSED_MAX   = 1000.0f/30.0f;
+const float TICK_DURATION = 1000.0f/60.0f;
+
+// used by other game loops
+const int TICK_INTERVAL = 30;
 
 
 
@@ -213,27 +221,36 @@ bool rect_rect_intersecting(Rect r1, Rect r2)
 
 /* rng */
 
+// returns a float between 0 and 1
+float random_unit()
+{
+    return float(rand()) / (u64(RAND_MAX) + 1);
+}
+
+float random_between(float min, float max)
+{
+    assert(max - min > 0);
+    return std::lerp(min, max, random_unit());
+}
+
 // (m, n]
-float random_between(float m, float n)
+int random_integer_between(int m, int n)
 {
     assert(n - m > 0);
-    return float((rand() % int(n - m)) + m);
+    return (rand() % int(n - m)) + m;
 }
 
-vec2 random_inside(Rect r)
+bool random_bool()
 {
-    return {
-        random_between(r.pos.x, r.pos.x + r.size.x),
-        random_between(r.pos.y, r.pos.y + r.size.y),
-    };
+    return rand() % 2;
 }
 
-float random_no_zero(float n)
+float random_no_zero(float min, float max)
 {
     float nums[2];
-    nums[0] = random_between(-n, 0);
-    nums[1] = random_between(1, n+1);
-    int which = int(random_between(0, 2));
+    nums[0] = random_between(-max, 0);
+    nums[1] = random_between(min, max);
+    int which = int(random_bool());
     return nums[which];
 }
 
@@ -317,8 +334,8 @@ struct Engine {
     void init(int width, int height);
     void deinit();
     bool poll();
-    void draw_one(vec2 pos, int gfx_id, int frame);
-    void draw();
+    void draw_one(float dt, vec2 pos, vec2 vel, int gfx_id, int frame);
+    void draw(float dt);
     int load_gfx(std::string_view pathname);
     void tick(float dt);
     void add_sprite(Particle particle);
@@ -548,20 +565,22 @@ bool Engine::poll()
     return true;
 }
 
-void Engine::draw_one(vec2 pos, int gfx_id, int frame)
+void Engine::draw_one(float dt, vec2 pos, vec2 vel, int gfx_id, int particle_frame)
 {
     auto &gfx = gfx_handler[gfx_id];
-    SDL_Rect src = { frame * PARTICLE_SIZE, 0, PARTICLE_SIZE, PARTICLE_SIZE };
-    SDL_Rect dst = { int(pos.x), int(pos.y), PARTICLE_SIZE, PARTICLE_SIZE };
+    // interpolate between frames
+    vec2 p = pos + vel * dt;
+    SDL_Rect src = { particle_frame * PARTICLE_SIZE, 0, PARTICLE_SIZE, PARTICLE_SIZE };
+    SDL_Rect dst = { int(p.x), int(p.y), PARTICLE_SIZE, PARTICLE_SIZE };
     SDL_RenderCopy(rd, gfx.tex, &src, &dst);
 }
 
-void Engine::draw()
+void Engine::draw(float dt)
 {
     SDL_SetRenderDrawColor(rd, 0, 0, 0, 0xff);
     SDL_RenderClear(rd);
     for (auto &p : particles)
-        draw_one(p.hitbox.top_left(), p.gfx_id, p.frame);
+        draw_one(dt, p.hitbox.top_left(), p.vel, p.gfx_id, p.frame);
     SDL_SetRenderDrawColor(rd, 0xff, 0, 0, 0xff);
     // draw_uniform_grid_lines(8);
     SDL_RenderPresent(rd);
@@ -595,6 +614,7 @@ int Engine::load_gfx(std::string_view pathname)
 // (look at the bottom for the 3 possible game loops)
 void Engine::tick(float dt)
 {
+    // fmt::print("tick\n");
     for (auto &particle : particles)
         particle.update(dt);
     auto collisions = broad_phase(particles);
@@ -617,12 +637,11 @@ void Engine::add_sprite(Particle particle)
 auto generate_particle(int screen_width, int screen_height, int id)
 {
     float radius = PARTICLE_SIZE/2;
-    vec2 pos{
-        random_between(0 + radius, screen_width  - radius),
-        random_between(0 + radius, screen_height - radius),
-    };
-    vec2 vel{ random_no_zero(6), random_no_zero(6) };
-    return Particle{pos, radius, vel, id, int(random_between(0, 5))};
+    vec2 pos{ random_between(0 + radius, screen_width  - radius),
+              random_between(0 + radius, screen_height - radius), };
+    vec2 vel{ random_no_zero(PARTICLE_MIN_VEL, PARTICLE_MAX_VEL),
+              random_no_zero(PARTICLE_MIN_VEL, PARTICLE_MAX_VEL) };
+    return Particle{pos, radius, vel, id, int(random_integer_between(0, 5))};
 }
 
 void init(int width, int height, int num_particles)
@@ -650,7 +669,7 @@ void game_loop1()
         next += TICK_INTERVAL;
         running = engine.poll();
         engine.tick(1);
-        engine.draw();
+        engine.draw(0);
         u32 now = SDL_GetTicks();
         SDL_Delay(next <= now ? 0 : next - now);
     }
@@ -658,7 +677,7 @@ void game_loop1()
 
 // http://gameprogrammingpatterns.com/game-loop.html
 
-// (this one still needs a sleep() somewhere)
+// variable step game loop
 void game_loop2()
 {
     auto last_time = SDL_GetTicks();
@@ -667,7 +686,7 @@ void game_loop2()
         auto elapsed = current - last_time;
         running = engine.poll();
         engine.tick(elapsed);
-        engine.draw();
+        engine.draw(0);
         last_time = current;
     }
 }
@@ -681,23 +700,50 @@ void game_loop3()
         auto elapsed = curr - prev;
         prev = curr;
         lag += elapsed;
-        // fmt::print("lag = {}\n", lag);
         running = engine.poll();
         while (lag >= TICK_INTERVAL) {
             engine.tick(1);
             lag -= TICK_INTERVAL;
         }
-        // slightly modified from game programming patterns's example.
-        // instead of using lag in the render function, we use it for
-        // sleeping. (we need to sleep anyway to reduce power consumption)
-        engine.draw();
-        SDL_Delay(lag);
+        engine.draw(lag);
+    }
+}
+
+void game_loop4()
+{
+    u32 last = SDL_GetTicks();
+    float lag = 0.0f;
+    for (bool running = true; running; ) {
+        running = engine.poll();
+        u32 time = SDL_GetTicks();
+        u32 elapsed = time - last;
+
+        // Sleep if at least 1ms less than frame min
+        if (MIN_FRAME_TIME - i32(elapsed) > 1) {
+            SDL_Delay(MIN_FRAME_TIME - elapsed);
+            time = SDL_GetTicks();
+            elapsed = time - last;
+        }
+
+        float elapsed_f = float(elapsed);
+        if (elapsed_f > ELAPSED_MAX)
+            elapsed_f = ELAPSED_MAX;
+        lag += elapsed_f;
+        if (lag > TICK_DURATION) {
+            while (lag > TICK_DURATION) {
+                engine.tick(TICK_DURATION);
+                lag -= TICK_DURATION;
+            }
+        }
+
+        engine.draw(lag / TICK_DURATION);
+        last = time;
     }
 }
 
 void game_loop()
 {
-    game_loop1();
+    game_loop4();
 }
 
 template <typename T>
