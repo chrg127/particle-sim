@@ -46,8 +46,6 @@ const float TICK_DURATION = 1000.0f/60.0f;
 // used by other game loops
 const int TICK_INTERVAL = 30;
 
-// all possible colors used by the balls
-const u32 COLORS[] = { 0x639bffff, 0x5fcde4ff, 0x99e550ff, 0xdf7126ff, 0xd95763ff };
 
 
 /* vector class */
@@ -237,7 +235,7 @@ float random_between(float min, float max)
 }
 
 // (m, n]
-int random_int_between(int m, int n)
+int random_integer_between(int m, int n)
 {
     assert(n - m > 0);
     return (rand() % int(n - m)) + m;
@@ -288,15 +286,34 @@ std::pair<vec2, vec2> elastic_collision_2d(vec2 v1, vec2 v2, float m1, float m2,
 
 /* particle and engine classes */
 
+struct Graphics {
+    SDL_Texture *tex;
+    vec2 size;
+};
+
+struct {
+    std::vector<Graphics> loaded_gfx;
+
+    int add(Graphics &&gfx)
+    {
+        loaded_gfx.emplace_back(gfx);
+        return loaded_gfx.size() - 1;
+    }
+
+    Graphics & operator[](int id) { return loaded_gfx[id]; }
+    vec2 gfx_size(int id)         { return loaded_gfx[id].size; }
+} gfx_handler;
+
 struct Particle {
     Circle hitbox;
     vec2 vel = {0,0};
     vec2 accel = {0,0};
-    u32 color;
+    int gfx_id; // which Graphics to use
     float mass = 1.0f;
+    int frame = 0;
 
-    Particle(vec2 p, float r, vec2 v, u32 c)
-        : hitbox{p, r}, vel{v}, color{c}
+    Particle(vec2 p, float r, vec2 v, int id, int f)
+        : hitbox{p, r}, vel{v}, gfx_id{id}, frame{f}
     { }
 
     void update(float dt);
@@ -318,8 +335,9 @@ struct Engine {
     void init(int width, int height);
     void deinit();
     bool poll();
-    void draw_one(float dt, Circle circle, vec2 vel, u32 color);
+    void draw_one(float dt, vec2 pos, vec2 vel, int gfx_id, int frame);
     void draw(float dt);
+    int load_gfx(std::string_view pathname);
     void tick(float dt);
     void add_sprite(Particle particle);
     void draw_uniform_grid_lines(int grid_size);
@@ -370,12 +388,12 @@ std::vector<Collision> sweep_and_prune(std::span<Particle> particles)
 void test_sap()
 {
     std::vector<Particle> ps = {
-        Particle{ vec2{10.0f, 40.0f},  5.0f, vec2{}, 0 },
-        Particle{ vec2{15.0f, 100.0f}, 5.0f, vec2{}, 0 },
-        Particle{ vec2{40.0f, 15.0f},  5.0f, vec2{}, 0 },
-        Particle{ vec2{60.0f, 40.0f},  5.0f, vec2{}, 0 },
-        Particle{ vec2{65.0f, 35.0f},  5.0f, vec2{}, 0 },
-        Particle{ vec2{76.0f, 90.0f},  5.0f, vec2{}, 0 },
+        Particle{ vec2{10.0f, 40.0f},  5.0f, vec2{}, 0, 0 },
+        Particle{ vec2{15.0f, 100.0f}, 5.0f, vec2{}, 0, 0 },
+        Particle{ vec2{40.0f, 15.0f},  5.0f, vec2{}, 0, 0 },
+        Particle{ vec2{60.0f, 40.0f},  5.0f, vec2{}, 0, 0 },
+        Particle{ vec2{65.0f, 35.0f},  5.0f, vec2{}, 0, 0 },
+        Particle{ vec2{76.0f, 90.0f},  5.0f, vec2{}, 0, 0 },
     };
     auto collisions = sweep_and_prune(ps);
     for (auto &c : collisions) {
@@ -496,22 +514,6 @@ std::vector<Collision> broad_phase_kdtree(std::span<Particle> particles)
 
 
 
-/* drawing stuff */
-
-template <typename T>
-void circle_rasterizer(T cx, T cy, T r, auto &&draw_scanline)
-{
-    for (auto y = cy - r; y < cy + r; y++) {
-        auto dist_y = std::abs(cy - y);
-        auto dist = std::sqrt(r*r - dist_y*dist_y);
-        auto x1 = cx - dist;
-        auto x2 = cx + dist;
-        draw_scanline(x1, x2, y);
-    }
-}
-
-
-
 /*
  * particle and engine implementations
  * (put here because one particle function depends on engine class
@@ -564,15 +566,14 @@ bool Engine::poll()
     return true;
 }
 
-void Engine::draw_one(float dt, Circle circle, vec2 vel, u32 color)
+void Engine::draw_one(float dt, vec2 pos, vec2 vel, int gfx_id, int particle_frame)
 {
+    auto &gfx = gfx_handler[gfx_id];
     // interpolate between frames
-    vec2 pos = circle.center + vel * dt;
-    SDL_SetRenderDrawColor(rd, color >> 24 & 0xff, color >> 16 & 0xff, color >> 8 & 0xff, color & 0xff);
-    circle_rasterizer(pos.x, pos.y, circle.radius, [&](float x1, float x2, float y) {
-        int iy = int(y);
-        SDL_RenderDrawLine(rd, int(x1), iy, int(x2), iy);
-    });
+    vec2 p = pos + vel * dt;
+    SDL_Rect src = { particle_frame * PARTICLE_SIZE, 0, PARTICLE_SIZE, PARTICLE_SIZE };
+    SDL_Rect dst = { int(p.x), int(p.y), PARTICLE_SIZE, PARTICLE_SIZE };
+    SDL_RenderCopy(rd, gfx.tex, &src, &dst);
 }
 
 void Engine::draw(float dt)
@@ -580,8 +581,9 @@ void Engine::draw(float dt)
     SDL_SetRenderDrawColor(rd, 0, 0, 0, 0xff);
     SDL_RenderClear(rd);
     for (auto &p : particles)
-        draw_one(dt, p.hitbox, p.vel, p.color);
+        draw_one(dt, p.hitbox.top_left(), p.vel, p.gfx_id, p.frame);
     SDL_SetRenderDrawColor(rd, 0xff, 0, 0, 0xff);
+    // draw_uniform_grid_lines(8);
     SDL_RenderPresent(rd);
 }
 
@@ -600,10 +602,20 @@ void Engine::draw_uniform_grid_lines(int grid_size)
     }
 }
 
+int Engine::load_gfx(std::string_view pathname)
+{
+    auto *bmp = SDL_LoadBMP(pathname.data());
+    assert(bmp && "load of bmp image failed");
+    auto *tex = SDL_CreateTextureFromSurface(rd, bmp);
+    SDL_FreeSurface(bmp);
+    return gfx_handler.add({ .tex = tex, .size = {bmp->w, bmp->h} });
+}
+
 // note that dt may or may not be used depending on which game loop we use
 // (look at the bottom for the 3 possible game loops)
 void Engine::tick(float dt)
 {
+    // fmt::print("tick\n");
     for (auto &particle : particles)
         particle.update(dt);
     auto collisions = broad_phase(particles);
@@ -623,23 +635,24 @@ void Engine::add_sprite(Particle particle)
 
 /* main stuff */
 
-auto generate_particle(int screen_width, int screen_height)
+auto generate_particle(int screen_width, int screen_height, int id)
 {
     float radius = PARTICLE_SIZE/2;
     vec2 pos{ random_between(0 + radius, screen_width  - radius),
               random_between(0 + radius, screen_height - radius), };
     vec2 vel{ random_no_zero(PARTICLE_MIN_VEL, PARTICLE_MAX_VEL),
               random_no_zero(PARTICLE_MIN_VEL, PARTICLE_MAX_VEL) };
-    u32 color = COLORS[random_int_between(0, std::size(COLORS))];
-    return Particle{pos, radius, vel, color};
+    return Particle{pos, radius, vel, id, int(random_integer_between(0, 5))};
 }
 
 void init(int width, int height, int num_particles)
 {
     std::srand(time(nullptr));
     engine.init(width, height);
+    int gfx = engine.load_gfx("ball.bmp");
+
     for (int i = 0; i < num_particles; i++)
-        engine.add_sprite(generate_particle(width, height));
+        engine.add_sprite(generate_particle(width, height, gfx));
 }
 
 void deinit()
