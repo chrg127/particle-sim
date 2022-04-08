@@ -198,7 +198,7 @@ struct Circle {
 
 bool circle_point_intersecting(Circle c, vec2 p)
 {
-    return (c.center - p).length_squared() <= c.radius;
+    return (c.center - p).length_squared() <= c.radius * c.radius;
 }
 
 bool circle_circle_intersecting(Circle c1, Circle c2)
