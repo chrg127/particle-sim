@@ -498,17 +498,35 @@ std::vector<Collision> broad_phase_kdtree(std::span<Particle> particles)
 
 /* drawing stuff */
 
-template <typename T>
-void circle_rasterizer(T cx, T cy, T r, auto &&draw_scanline)
+void circle_rasterizer(float cx, float cy, float r, auto &&draw_scanline)
 {
-    for (auto y = cy - r; y < cy + r; y++) {
-        auto dist_y = std::abs(cy - y);
-        auto dist = std::sqrt(r*r - dist_y*dist_y);
-        auto x1 = cx - dist;
-        auto x2 = cx + dist;
+    auto y1 = cy - r,
+         y2 = cy + r;
+    for (auto y = y1; y < y2; y++) {
+        auto ydist = y - cy + 0.5f;
+        auto xdist = sqrtf(r*r - ydist*ydist);
+        auto x1 = floor(cx - xdist + 0.5f);
+        auto x2 = floor(cx + xdist + 0.5f);
         draw_scanline(x1, x2, y);
     }
 }
+
+void circle_rasterizer2(float cx, float cy, float r, auto &&draw)
+{
+    float x1 = cx - r, y1 = cy - r,
+          x2 = cx + r, y2 = cy + r;
+    for (auto y = y1; y < y2; y++) {
+        for (auto x = x1; x < x2; x++) {
+            auto xdist = x - cx + 0.5f,
+                 ydist = y - cy + 0.5f;
+            auto dist2 = xdist*xdist + ydist*ydist;
+            if (dist2 <= r*r)
+                draw(x, y);
+        }
+    }
+}
+
+
 
 
 
@@ -569,9 +587,12 @@ void Engine::draw_one(float dt, Circle circle, vec2 vel, u32 color)
     // interpolate between frames
     vec2 pos = circle.center + vel * dt;
     SDL_SetRenderDrawColor(rd, color >> 24 & 0xff, color >> 16 & 0xff, color >> 8 & 0xff, color & 0xff);
-    circle_rasterizer(pos.x, pos.y, circle.radius, [&](float x1, float x2, float y) {
-        int iy = int(y);
-        SDL_RenderDrawLine(rd, int(x1), iy, int(x2), iy);
+    // circle_rasterizer(pos.x, pos.y, circle.radius, [&](float x1, float x2, float y) {
+    //     int iy = int(y);
+    //     SDL_RenderDrawLine(rd, int(x1), iy, int(x2), iy);
+    // });
+    circle_rasterizer2(pos.x, pos.y, circle.radius, [&](float x, float y) {
+        SDL_RenderDrawPoint(rd, int(x), int(y));
     });
 }
 
